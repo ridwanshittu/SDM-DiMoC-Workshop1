@@ -5,13 +5,14 @@ date: "2023-02-20"
 output: 
   html_document:
     toc: true # table of content true
-    toc_depth: 3
+    toc_depth: 2
     toc_float: true
     theme: united 
 ---
 
 #Species Distribution Modelling
-
+Species distribution modeling (SDM) is a statistical approach used to predict the potential distribution of a species based on environmental variables.
+It can help in identifying suitable habitats for species or at risk of MBD transmission, guiding surveillance efforts, and predicting the impacts of climate change.
 ## Settings
 ### Load required libraries and create folders
 ```{r library, message=FALSE, warning=FALSE}
@@ -70,6 +71,10 @@ dim(alb_raw);dim(alb_unique)
 # inspect the duplicated records
 str(alb_unique)
 hist(as.numeric(alb_unique$YEAR), xlab="Year", main="Temporal distribution of Aedes albopictus")
+
+write.csv(alb_unique, "occ/albopictus_cleaned_1.csv")
+
+#Inspect the occurrence data in QGIS for interactive editting.
 ```
 
 # Environmental Data
@@ -81,22 +86,120 @@ Preprocess the environmental data to ensure they have the same resolution, proje
 #bio
 # res:2.5
 bio <-  worldclim_global(var="bio", res=2.5, path="env/world/", version="2.1")
-bios <- raster::stack(bio) #resaving spatRaster to raster
+bio <- raster::stack(bio) #resaving spatRaster to raster
 
-plot(bios[[1]])
+plot(bio[[1]])
 
-# writeRaster(bios,filename=paste0(getwd(),"/",names(bios),".asc"),format="ascii", bylayer=TRUE,overwrite=T)
+#to use maxent from the GUI interface.
+writeRaster(bio,filename=paste0(getwd(),"/","env/world/",names(bio),".asc"),format="ascii", bylayer=TRUE,overwrite=T)
+```
+## Thin occurrence records
+Thin occurrence records, retain only one record per raster cell
+```{r thin_occ, message=FALSE, warning=FALSE}
+alb_occ <- alb_unique[,c("lon","lat")] #select the coordinates 
+alb_cell <- raster::extract(bio[[1]], alb_occ, cellnumbers=TRUE) #extract the raster values for each point
+sum(duplicated(alb_cell[,1]))==0  #check for duplicate i.e. two points on one raster cell
+#remove duplicate
+alb_celldups <- duplicated(alb_cell[,1]) # 1 represent the cell number column.
+alb_thin <- alb_occ[!alb_celldups,]
+cat(nrow(alb_occ)-nrow(alb_thin), "records are removed") # check the remaining occurrence point.
+
+#Visualized the thinned records
+plot(bio[[1]], main="Mean annual temperature")
+points(alb_thin)
+
+# another method = spthin packages, it takes longer time to run but allow a definition of the distance to use to thin the occurrence records.
+```
+## clip data to a study area Europe
+Download and reshape Europe Shapefiles
+```{r, clip data to europe, message=FALSE, warning=FALSE}
+
+EU_spdf <- ne_countries(continent = "europe")
+#exclude Russia
+EU_spdf <- EU_spdf[EU_spdf$sovereignt !="Russia",]
+sp::plot(EU_spdf)
+#create an extent using the raster function extent to describe EU only: removing French Guana etc.
+EU_ext <- raster::extent(c(xmin= -12, xmax=34, ymin=34, ymax=71))
+#clip the EU shapefile to EU_extent using crop function
+EU_shp <- crop(EU_spdf, EU_ext)
+plot(EU_shp, col="blue")
+
+alb_eu <- filter(alb_thin, lat>34 & lat<71, lon>-12&lon<34) #select occurrence in Europe
+
+#Clip bioclim data to Europe
+bio.eu <- raster::crop(bio, EU_shp)
+bio.eu <- raster::mask(bio.eu, EU_shp)
+
+plot(bio[[1]], main="Mean annual temperature") #plot the 
+points(alb_eu, col="red")
+plot(bio.eu[[1]], main="Mean annual temperature for Europe") #zoom to europe
+points(alb_eu, col="red")
+
+writeRaster(bio.eu,filename=paste0(getwd(),"/",names(bio.eu),".asc"),format="ascii", bylayer=TRUE,overwrite=T)
+```
+
+## Buffer occurrence
+Create buffer arround the occurrence records to reduce area for pseudo-absence.
+### Create Buffer 
+```{r buffer, message=FALSE,warning=FALSE}
+#buffering occurrence records
+#conver to simple feature
+alb_eu_sf <- sf::st_as_sf(alb_eu, coords=c("lon", "lat"), crs=4326)
+
+#3035-ETRS89-extended/LAEA EUrope
+alb_eu_sf <- sf::st_transform(alb_eu_sf, crs = 3035) #easy to use
+
+#here we use 1000km, 
+# How can we determine the buffer distance to use for the occurrence data.
+#we could create different maxent models using different buffersizes to determine the best buffersize to use.
+alb_buf <- sf::st_buffer(alb_eu_sf, dist = 1000000) %>% 
+  sf::st_union() %>% 
+  sf::st_sf() %>% 
+  sf::st_transform(crs = 4326)
+
+plot(bio[[1]], main="Mean annual temperature")
+points(alb_eu)
+plot(alb_buf, border="red", lwd=3, add=TRUE)
+
+### clip environmental data with the occurrence buffer
+bio_buf <- raster::crop(bio, alb_buf)  # clip raster to the buffer area
+bio_buf <- raster::mask(bio_buf, alb_buf) # mask out the clipped area
+# 
+plot(bio_buf[[1]], main="Mean Annual Temperature")
+points(alb_eu)
+plot(alb_buf, border="red", lwd=3, add=TRUE)
+```
+## Backgroup point selection
+### Background point selection
+```{r select background points, message=FALSE, warning=FALSE}
+set.seed(0323) #to allow selection of the same random sampling point.
+bg <- dismo::randomPoints(mask=bio.eu[[3]],n=10000,p=alb_eu, excludep = T)
+bg <- as.data.frame(bg)
+head(alb_eu)
+head(bg)
+colnames(bg) <- colnames(alb_eu)
+
+write.csv(bg, "occ/background_seed0323.csv", row.names = FALSE)
+write.csv(alb_eu, "occ/aedes_albopictus_thinned.csv", row.names = FALSE)
+
 ```
 
 
-## Thin occurrence records
-## Buffer occurrence
 ## Variable sel- corrélation matrix
+variable Selection involve choosing the most relevant environmental variables that may affect the species' distribution using statistical tests, expert knowledge, or ecological theory.
+statistical approach involve testing for collinearity- a high correlation between variables. If affect understand and predicting the relationship between environmental variable and response variable. high correlation can be set to 0.7 (Dorman et al.2013)
+
+
 ## Variable selection-ENMeval
 ## Variable selection-Jackknife
 ## Partial Receiver operating curve
 ## Clamping and extrapolation
 ## Main Model
 ## Threshold
+
 ## Future Projection
 
+## Reference
+Fick, S.E. and R.J. Hijmans, 2017. WorldClim 2: new 1km spatial resolution climate surfaces for global land areas. International Journal of Climatology 37 (12): 4302-4315.
+
+Dormann, C.F., Elith, J., Bacher, S., Buchmann, C., Carl, G., Carré, G., Marquéz, J.R.G., Gruber, B., Lafourcade, B., Leitão, P.J., Münkemüller, T., McClean, C., Osborne, P.E., Reineking, B., Schröder, B., Skidmore, A.K., Zurell, D. and Lautenbach, S. (2013), Collinearity: a review of methods to deal with it and a simulation study evaluating their performance. Ecography, 36: 27-46. https://doi.org/10.1111/j.1600-0587.2012.07348.x
