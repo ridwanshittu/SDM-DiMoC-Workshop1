@@ -1,0 +1,102 @@
+---
+title: "Species Distribution Modeling"
+author: "Ridwan Shittu"
+date: "2023-02-20"
+output: 
+  html_document:
+    toc: true # table of content true
+    toc_depth: 3
+    toc_float: true
+    theme: united 
+---
+
+#Species Distribution Modelling
+
+## Settings
+### Load required libraries and create folders
+```{r library, message=FALSE, warning=FALSE}
+#load R-Packages
+library(raster) #for Raster analysis
+library(ENMeval) #for testing different models and feature-for model selection 
+library(dismo) #for using Maxent in R
+library(sf) 
+library(dplyr)
+library(geodata) #to download worldclim new version dataset
+library(rnaturalearth) # for getting different shapefiles
+library(rJava) # require to run Maxent in R.
+#NB. One can use Maxnet also in R
+```
+
+## Working directory and folders
+Set working directory and create folder for data
+```{r directoryfolder, message=FALSE, warning=FALSE}
+#Create folders
+getwd() # determine your working directory
+
+#Check if data folder is on the working directory,if not create data folder to hold the process data
+if(!file.exists("occ")){
+  dir.create("occ")
+}
+if(!file.exists("env")){dir.create("env")}
+if(!file.exists("env/world")){dir.create("env/world")}
+if(!file.exists("env/study_bg")){dir.create("env/study_bg")}
+if(!file.exists("env/europe")){dir.create("env/europe")}
+```
+
+## Clean occurrence records
+load or download occurence records of species or phenomenol of interest.
+Clean and process the occurrence and environmental data to remove duplicates, errors, or missing values.
+Here we will work with the  occurrence records of Aedes albopictus available as supplementary data for the publication of Kraemer et al 2015: 
+```{r occurrence data, message=FALSE, warning=FALSE}
+## load occurrence records
+alb_raw <- read.csv("occ/albopictus_corrected.csv", na.strings = "NA", stringsAsFactors = FALSE)
+head(alb_raw) #check the data and identify the coordinate columns
+colnames(alb_raw)[c(6,7)] <- c("lat", "lon")
+colnames(alb_raw)
+#clean the occurrence records
+#check for NAs and duplicates
+sum(is.na(alb_raw[,6:7]))==0 # check for coordinates with NAs
+#remove nas
+alb_clean <- subset(alb_raw, !is.na(lon) & !is.na(lat))
+head(alb_raw)
+cat(nrow(alb_raw)-nrow(alb_clean), "records are removed")
+
+sum(duplicated(alb_raw[, 6:7]))==0 #check for duplicated records
+#remove duplicated records
+dups <- duplicated(alb_clean[c("lat","lon")])
+alb_unique <- alb_clean[!dups,]
+cat(nrow(alb_clean)-nrow(alb_unique), "records are removed")
+dim(alb_raw);dim(alb_unique)
+# inspect the duplicated records
+str(alb_unique)
+hist(as.numeric(alb_unique$YEAR), xlab="Year", main="Temporal distribution of Aedes albopictus")
+```
+
+# Environmental Data
+## Download environmental data 
+Download environmental data e.g. bioclimatic data.
+Preprocess the environmental data to ensure they have the same resolution, projection, and spatial extent
+```{r environmental data, message=FALSE, warning=FALSE}
+#bio=bioclimatic variables from worldclim 2 (Fick &Hijman 2017). It has 19 layers of derived from monthly temperature and rainfall values in order to generate more biologically meaningful variables.
+#bio
+# res:2.5
+bio <-  worldclim_global(var="bio", res=2.5, path="env/world/", version="2.1")
+bios <- raster::stack(bio) #resaving spatRaster to raster
+
+plot(bios[[1]])
+
+# writeRaster(bios,filename=paste0(getwd(),"/",names(bios),".asc"),format="ascii", bylayer=TRUE,overwrite=T)
+```
+
+
+## Thin occurrence records
+## Buffer occurrence
+## Variable sel- corrélation matrix
+## Variable selection-ENMeval
+## Variable selection-Jackknife
+## Partial Receiver operating curve
+## Clamping and extrapolation
+## Main Model
+## Threshold
+## Future Projection
+
