@@ -26,6 +26,7 @@ library(geodata) #to download worldclim new version dataset
 library(rnaturalearth) # for getting different shapefiles
 library(rJava) # require to run Maxent in R.
 #NB. One can use Maxnet also in R
+source("prepPara.R") # function to tune maxent i.e. different from the autofeatures in maxent
 ```
 
 ## Working directory and folders
@@ -85,13 +86,20 @@ Preprocess the environmental data to ensure they have the same resolution, proje
 #bio=bioclimatic variables from worldclim 2 (Fick &Hijman 2017). It has 19 layers of derived from monthly temperature and rainfall values in order to generate more biologically meaningful variables.
 #bio
 # res:2.5
-bio <-  worldclim_global(var="bio", res=2.5, path="env/world/", version="2.1")
+if( !file.exists( paste0("env/world/wc2.1_2.5m/")   )){
+  bio <-  worldclim_global(var="bio", res=2.5, path="~/Documents/ENM_2023/SDM-DiMoC-Workshop1/env/world/", version="2.1")
+}
+              
+bio <-list.files("~/Documents/ENM_2023/SDM-DiMoC-Workshop1/env/world/wc2.1_2.5m", pattern=".tif",full.names=T)
+
+
 bio <- raster::stack(bio) #resaving spatRaster to raster
 
 plot(bio[[1]])
 
 #to use maxent from the GUI interface.
-writeRaster(bio,filename=paste0(getwd(),"/","env/world/",names(bio),".asc"),format="ascii", bylayer=TRUE,overwrite=T)
+# writeRaster(bio,filename=paste0(getwd(),"/","env/world/",names(bio),".asc"),format="ascii", bylayer=TRUE,overwrite=T)
+save(bio, file ="~/Documents/ENM_2023/SDM-DiMoC-Workshop1/bio.RData")
 ```
 ## Thin occurrence records
 Thin occurrence records, retain only one record per raster cell
@@ -135,7 +143,7 @@ points(alb_eu, col="red")
 plot(bio.eu[[1]], main="Mean annual temperature for Europe") #zoom to europe
 points(alb_eu, col="red")
 
-writeRaster(bio.eu,filename=paste0(getwd(),"/",names(bio.eu),".asc"),format="ascii", bylayer=TRUE,overwrite=T)
+# writeRaster(bio.eu,filename=paste0(getwd(),"/",names(bio.eu),".asc"),format="ascii", bylayer=TRUE,overwrite=T)
 ```
 
 ## Buffer occurrence
@@ -173,7 +181,7 @@ plot(alb_buf, border="red", lwd=3, add=TRUE)
 ### Background point selection
 ```{r select background points, message=FALSE, warning=FALSE}
 set.seed(0323) #to allow selection of the same random sampling point.
-bg <- dismo::randomPoints(mask=bio.eu[[3]],n=10000,p=alb_eu, excludep = T)
+bg <- dismo::randomPoints(mask=bio.eu[[1]],n=10000,p=alb_eu, excludep = T)
 bg <- as.data.frame(bg)
 head(alb_eu)
 head(bg)
@@ -181,6 +189,43 @@ colnames(bg) <- colnames(alb_eu)
 
 write.csv(bg, "occ/background_seed0323.csv", row.names = FALSE)
 write.csv(alb_eu, "occ/aedes_albopictus_thinned.csv", row.names = FALSE)
+alb_eu.mx <- data.frame(species="species", alb_eu)# the format for maxent must have colume for species
+write.csv(alb_eu.mx,"occ/aedes_albopictus_thinned_mx.csv", row.names = FALSE )
+
+```
+
+## Prepare Data for model fitting 
+```{r}
+# get the same random sample for training and testing
+set.seed(0323)
+# randomly select 70% for training
+selected <- sample(1:nrow(alb_eu),nrow(alb_eu)*0.70)
+alb_train <- alb_eu[selected,] # selection for model training
+alb_test <- alb_eu[-selected,] # selection for model testing
+
+
+p <- raster::extract(bio_buf,alb_train)
+dim(p)
+# out <- which(is.na(rowSums(p))) # if a record has missing data (NA) then the sum of its rows is also NA... find these (if any)
+# if (length(out) > 0) {
+#    p <- p[-out, ]
+#   }
+
+# extracting env conditions for background/pseudo-absence
+a <- raster::extract(bio_buf,bg)
+dim(a)
+# out <- which(is.na(rowSums(a))) # if a record has
+# 
+# if (length(out) > 0) {
+#    a <- a[-out, ]
+#   }
+dim(a)
+
+# repeat the number 1 as many times as the number of rows in p,
+# and repeat 0 for the rows of background points
+pa <- c(rep(1,nrow(p)), rep(0,nrow(a)))
+
+sdata <- as.data.frame(rbind(p,a))
 
 ```
 
@@ -189,17 +234,99 @@ write.csv(alb_eu, "occ/aedes_albopictus_thinned.csv", row.names = FALSE)
 variable Selection involve choosing the most relevant environmental variables that may affect the species' distribution using statistical tests, expert knowledge, or ecological theory.
 statistical approach involve testing for collinearity- a high correlation between variables. If affect understand and predicting the relationship between environmental variable and response variable. high correlation can be set to 0.7 (Dorman et al.2013)
 
+```{r var_select1, message=FALSE, fig.width=8, fig.height=8}
+library(corrplot)
+cormat_env <- sdata
+names(cormat_env) <- gsub(pattern="wc2.1_2.5m_", replace= "", x=names(cormat_env))
+colinearity <- cor(cormat_env, use="complete.obs", method = "spearman")
+# saveRDS(colinearity, "results/colinearity.Rds")
+corrplot(colinearity, type = "upper", method = "number", col=COL2 ( "RdBu", 10))
+# corrplot.mixed(colinearity)
+
+# corrplot(colinearity, method = "square", addCoef.col = "grey", tl.pos = 'd', cl.pos = "r", type = "upper", col=COL2 ( "RdBu", 10))
+
+```
+```{r}
+# statistical selection of variable using collinearity plot
+
+colnames(sdata)
+#svs-statistical variable selection
+selectedVar <- c("wc2.1_2.5m_bio_1","wc2.1_2.5m_bio_4","wc2.1_2.5m_bio_7","wc2.1_2.5m_bio_8","wc2.1_2.5m_bio_12", "wc2.1_2.5m_bio_13", "wc2.1_2.5m_bio_15", "wc2.1_2.5m_bio_16","wc2.1_2.5m_bio_19")
+mod_svs <- maxent(x=sdata[selectedVar],
+                  p=pa,
+                path=paste0(getwd(),"/results/maxent_prj_svs"),
+                  args=prepPara(userfeatures="LQHPT",
+                            betamultiplier=1))
+
+plot(mod_svs)
+pred.svs.buf <- predict(mod_svs, bio_buf)
+
+plot(pred.svs.buf)
+```
 
 ## Variable selection-ENMeval
+ENMeval Kass etal., 2021 
+```{r ENMeval, warning=FALSE}
+# tune.args <- list(fc = c("LQ", "LQH", "LQP", "LQHP"), rm = seq(0.5, 4, 0.5))
+# alb_enm <- ENMevaluate(alb_train, bio_buf, bg, algorithm = "maxent.jar",
+#                        tune.args = tune.args, partitions = "block", parallel = TRUE, numCores = 8)
+# takes 96 minutes 55.9 seconds to run.
+# save(alb_enm, file = "results/alb_enm.RData")
+load("results/alb_enm.RData")
+# enm.test.mn <- ENMevaluate(alb_train, bio_buf, bg, algorithm = "maxnet", 
+#                       tune.args = tune.args, partitions = "testing", 
+#                       occs.testing = alb_test, parallel = TRUE, numCores = 4)
+# 
+# enm.test.mx <- ENMevaluate(alb_train, bio_buf, bg, algorithm = "maxent", 
+#                       tune.args = tune.args, partitions = "testing", 
+#                       occs.testing = alb_test, parallel = TRUE, numCores = 4)
+# 
+
+```
+### Model Selection
+
+```{r enmeval_selectn, message=FALSE, warning=FALSE}
+# alb_res <- eval.results(enm.test.mn )
+# opt.aicc <- alb_res %>% filter(delta.AICc == 0)
+# opt.aicc
+# 
+# opt.seq <- alb_res %>% 
+#   filter(or.10p == min(or.10p)) %>% 
+#   filter(auc.val == max(auc.val))
+# opt.seq
+
+alb_res <- eval.results(alb_enm )
+opt.aicc <- alb_res %>% filter(delta.AICc == 0)
+opt.aicc
+
+opt.seq <- alb_res %>%
+  filter(or.10p.avg == min(or.10p.avg)) %>%
+  filter(auc.val.avg == max(auc.val.avg))
+opt.seq
+
+```
+
 ## Variable selection-Jackknife
-## Partial Receiver operating curve
-## Clamping and extrapolation
+using the jackknife 
+
 ## Main Model
+
 ## Threshold
 
 ## Future Projection
 
 ## Reference
+Hijmans, R. & Elith, J. (2021) Species distribution modeling.
+https://rspatial.org/raster/sdm/
+
+https://biodiversityinformatics.amnh.org/open_source/maxent/Maxent_tutorial_2021.pdf
+
+
+Kass JM, Muscarella R, Galante PJ, Bohl CL, Pinilla-Buitrago GE, Boria RA, Soley-Guardia M, Anderson RP (2021). “ENMeval 2.0: Redesigned for customizable and reproducible modeling of species’ niches and distributions.” Methods in Ecology and Evolution, 12(9), 1602-1608. https://doi.org/10.1111/2041-210X.13628.
+
+https://jamiemkass.github.io/ENMeval/articles/ENMeval-2.0-vignette.html#resources
+
+
 Fick, S.E. and R.J. Hijmans, 2017. WorldClim 2: new 1km spatial resolution climate surfaces for global land areas. International Journal of Climatology 37 (12): 4302-4315.
 
 Dormann, C.F., Elith, J., Bacher, S., Buchmann, C., Carl, G., Carré, G., Marquéz, J.R.G., Gruber, B., Lafourcade, B., Leitão, P.J., Münkemüller, T., McClean, C., Osborne, P.E., Reineking, B., Schröder, B., Skidmore, A.K., Zurell, D. and Lautenbach, S. (2013), Collinearity: a review of methods to deal with it and a simulation study evaluating their performance. Ecography, 36: 27-46. https://doi.org/10.1111/j.1600-0587.2012.07348.x
